@@ -132,37 +132,37 @@
 			</Filter>
 		</Filter>
 		<Filter
-			Name="bootloader"
+			Name="boot"
 			>
 			<File
-				RelativePath=".\bootloader\boot.asm"
+				RelativePath=".\boot\boot.asm"
 				>
 			</File>
 			<File
-				RelativePath=".\bootloader\loader.asm"
+				RelativePath=".\boot\loader.asm"
 				>
 			</File>
 			<Filter
 				Name="include"
 				>
 				<File
-					RelativePath=".\bootloader\include\fat12.inc"
+					RelativePath=".\boot\include\fat12.inc"
 					>
 				</File>
 				<File
-					RelativePath=".\bootloader\include\lib16.inc"
+					RelativePath=".\boot\include\lib16.inc"
 					>
 				</File>
 				<File
-					RelativePath=".\bootloader\include\lib32.inc"
+					RelativePath=".\boot\include\lib32.inc"
 					>
 				</File>
 				<File
-					RelativePath=".\bootloader\include\load.inc"
+					RelativePath=".\boot\include\load.inc"
 					>
 				</File>
 				<File
-					RelativePath=".\bootloader\include\structs.inc"
+					RelativePath=".\boot\include\structs.inc"
 					>
 				</File>
 			</Filter>
