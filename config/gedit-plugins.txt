@@ -1,0 +1,7 @@
+sudo apt-get install gedit-plugins
+sudo apt-get install exuberant-ctags
+sudo cp asm-att.lang sm-intel.lang /usr/share/gtksourceiew-3.0/language-specs/
+git clone git://github.com/Quixotix/gedit-source-code-browser.git
+
+Embedded Terminal issue: can't set color
+gsettings set org.gnome.gedit.plugins.terminal background-color '#FFFFDD'

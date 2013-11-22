@@ -1,0 +1,480 @@
+%include "structs.inc"
+
+org 0100h
+jmp LABEL_START
+
+%include "fat12.inc"
+%include "load.inc"
+
+; constant
+LABEL_CONSTANT:  
+	ReadFatOffset		equ 0d000h  ; 保存读取FAT段内偏移
+	BaseOfStack         equ 0100h   ; 堆栈栈顶值
+
+[section .code16]
+align 16
+[bits 16]
+; variable
+LABEL_VARIABLE:
+    MsgLoading  db 'loading'
+    MsgLoadingLen equ $ - MsgLoading
+    MsgError    db 'Can not find kernel'
+    MsgErrorLen equ $ - MsgError
+    StrKernel   db 'KERNEL  BIN'
+    StrKernelLen equ $ - StrKernel
+	MsgReady	db 'Ready'
+	MsgReadyLen equ $ - MsgReady
+	MsgKernelTooLarge db "kernel too large"
+	MsgKernelTooLargeLen equ $ - MsgKernelTooLarge
+    
+	fat_value dw 0
+	bx_value  dw 0
+	kernel_size dw 0
+
+LABEL_START:
+    ; initialize segment register
+    mov ax, cs
+    mov ds, ax
+	mov es, ax
+    mov ss, ax
+    mov sp, BaseOfStack
+	
+    ; clear the screen
+    call clear
+
+    ; display the "loading" string
+    mov ax, MsgLoading
+    mov cx, MsgLoadingLen
+    mov dh, 0
+    call print
+    
+    ; get the memory information
+ 	mov ebx, 0
+	mov di, _MemChkBuf
+.MemChkLoop:
+	mov eax, 0e820h
+	mov ecx, 20
+	mov edx, 534d4150h
+	int 15h
+	jc .MemChkFail
+	add di, 20
+	inc dword[_dwMCRNumber]
+	cmp ebx, 0
+	jne .MemChkLoop
+	jmp .MemChkOk
+.MemChkFail:
+	mov dword [_dwMCRNumber], 0
+    jmp $
+.MemChkOk:
+   
+    ; reset the floppy
+    xor ah, ah
+    xor dl, dl
+    int 13h
+    
+    ; 在目录项中查找内核文件
+    mov ax, KernelBase
+    mov es, ax
+	mov bx, KernelOffset
+	 
+   ; read the root entry sectors
+    mov ax, RootDirOffset
+    mov cl, RootDirSectors
+    call read_sector
+    
+    ; lookup the kernel.bin
+	mov cx, [BPB_RootEntCnt] ; 循环次数为目录项的数目
+.loop:
+	; 比较文件名
+	mov ah, StrKernelLen
+	mov si, StrKernel
+	mov di, bx
+.cmp:
+	; 比较字符
+	lodsb
+	mov dl, [es:di]
+	cmp al, dl
+	jnz .next
+	dec ah
+	cmp ah, 0
+	jz .FindLoader
+	inc di
+	jmp .cmp
+.next:
+	; 下一个目录项
+	add bx, 32
+	loop .loop
+	
+	; 查找结束，说明没有找到，打印 no kernel 信息
+	mov ax, MsgError
+	mov cx, MsgErrorLen
+	mov dh, 1
+	call print
+	jmp $
+	
+.FindLoader:
+	push eax
+	mov eax, [es: bx + 01ch]
+	mov dword [kernel_size], eax
+	cmp eax, KERNEL_VALID_SIZE
+	ja .1
+	pop eax
+	jmp .2
+.1:
+	pop eax
+	mov ax, MsgKernelTooLarge
+	mov cx, MsgKernelTooLargeLen
+	mov dh, 2
+	call print ; kernel.bin 太大，死循环在这里
+	jmp $
+.2:	
+	add bx, 26
+	mov ax, [es:bx] ; 第一个FAT项
+	mov [fat_value], ax ; 保存
+	
+    
+    ; 一次性读取所有的FAT
+	;xchg bx, bx
+	;mov bx, ReadFatOffset
+	;mov ax, FAT1Offset
+	;mov cl, SectorsOfFAT
+	;call read_sector
+	; 因为在boot.asm中一次性把所有的FAT扇区读入了LoaderBase:ReadFatOffset中
+	; 所以在这里直接使用就好了，把LoaderBase的值保存到fs中。
+	mov ax, LoaderBase
+	mov fs, ax
+    
+    ; 加载内核文件
+	mov bx, KernelOffset
+	mov [bx_value], bx
+.read:
+    ; load boot.bin, 此时可用的通用寄存器（ax, [bx], cx, dx, si, di, bp）
+	; 计算FAT值在FAT表中的索引
+	mov ax, [fat_value]
+	xor dx, dx
+	mov bx, 2
+	div bx
+	mov cx, dx
+	mov bx, 3
+	mul bx
+	add ax, ReadFatOffset
+	cmp cx, 0
+	jz .non_odd
+	inc ax
+.non_odd:
+	mov si, ax
+	mov al, [fs:si]
+	mov ah, [fs:si+1]
+	cmp cx, 0
+	jnz .odd
+	and ax, 0fffh
+	jmp .load
+.odd:
+	shr ax, 4
+.load:
+	mov dx, ax
+	mov ax, [fat_value]
+	add ax, FileDataOffset
+	mov cl, 1
+	mov bx, [bx_value]
+	call read_sector
+	add bx, 512
+	mov [bx_value], bx
+	jc .next_segment
+	jmp .is_end
+.next_segment:
+	push ax
+	mov ax, es
+	add ax, 1000h
+	mov es, ax
+	pop ax
+.is_end:
+	cmp dx, 0ff8h
+	jge .execute
+	mov [fat_value], dx
+	jmp .read
+	
+.execute:
+    xchg bx, bx
+	call KillMotor
+    
+	; 打印 ready
+	mov ax, MsgReady
+	mov cx, MsgReadyLen
+	mov dh, 1
+	call print
+	
+    ; switch to protected mode
+    cli
+    lgdt[GdtPtr]
+    
+    in al, 92h
+    or al, 10b
+    out 92h, al
+    
+    mov eax, cr0
+    or eax, 1
+    mov cr0, eax
+    
+    jmp dword SelectorFlatCode:(PhyLoaderBase + LABEL_FLAT_CODE)
+    jmp $
+
+%include "lib16.inc"
+
+[section .code32]
+align 32
+[bits 32]
+LABEL_FLAT_CODE:
+    mov ax, SelectorFlatData
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov ss, ax
+    mov esp, TopOfStack
+    
+    mov ax, SelectorVideo
+    mov gs, ax
+    
+    push szMemChkTitle
+    call Display
+    add esp, 4
+    
+    call DisplayMemoryInfo
+    call SetupPaging
+    
+    ;mov ah, 0fh
+    ;mov al, 'p'
+    ;mov [gs:((80 * 0 + 39) * 2)], ax
+    ;jmp $
+	xchg bx, bx
+    call InitKernel
+    
+    mov dword [BOOT_PARAM_ADDR], BOOT_PARAM_MAGIC
+    mov eax, [dwMemSize]
+    mov [BOOT_PARAM_ADDR + 4], eax
+    mov eax, KernelBase
+    shl eax, 4
+    add eax, KernelOffset
+    mov [BOOT_PARAM_ADDR + 8], eax
+    
+    jmp SelectorFlatCode:PhyKernelEntry
+    
+%include "lib32.inc"
+
+DisplayMemoryInfo:
+	push esi
+	push edi
+	push ecx
+	
+	mov esi, MemChkBuf
+	mov ecx, [dwMCRNumber]
+.loop:
+	mov edx, 5
+	mov edi, ARDStruct
+.1:
+	push dword [esi]
+	call DispInt
+	pop eax
+	stosd
+	add esi, 4
+	dec edx
+	cmp edx, 0
+	jnz .1
+	call DispReturn
+	cmp dword [dwType], 1
+	jne .2
+	mov eax, [dwBaseAddrLow]
+	add eax, [dwLengthLow]
+	cmp eax, [dwMemSize]
+	jb .2
+	mov [dwMemSize], eax
+.2:
+	loop .loop
+	
+	call DispReturn
+	push szRAMSize
+	call Display
+	add esp, 4
+	
+	push dword [dwMemSize]
+	call DispInt
+	add esp, 4
+	
+	pop ecx
+	pop edi
+	pop esi
+	ret
+
+SetupPaging:
+	; 计算内存所需页目录项个数
+	xor edx, edx
+	mov eax, [dwMemSize]
+	mov ebx, 400000h ; = 4M = 1024(PDE) * 4096(PAGE_SIZE)
+	div ebx
+	mov ecx, eax
+	test edx, edx
+	jz .no_remainder
+	inc ecx
+.no_remainder:
+	push ecx ; exc 中保存了目录项个数
+	
+	; 初始化页目录表(PDT)
+	mov ax, SelectorFlatData
+	mov es, ax
+	mov edi, PageDirBase
+	xor eax, eax
+	mov eax, PageTabBase | PG_P | PG_U | PG_RW
+.1:
+	stosd
+	add eax, 4096
+	loop .1
+	
+	; 初始化页表(PET)
+	pop eax
+	;mov ebx, 1024
+	;mul ebx
+	shl eax, 10
+	mov ecx, eax ; 连续的(PE)个数
+	mov edi, PageTabBase
+	xor eax, eax
+	mov eax, PG_P | PG_U | PG_RW
+.2:
+	stosd
+	add eax, 4096
+	loop .2
+	
+	; 开户分页内存机制
+	mov eax, PageDirBase
+	mov cr3, eax
+	mov eax, cr0
+	or eax, 80000000h
+	mov cr0, eax
+	jmp .3
+.3:
+	nop
+	ret
+    
+; ELF 文件格式结构
+; #define EI_NIDENT 16
+; typedef struct {
+;       unsigned char   e_ident[EI_NIDENT]  ; 0x0
+;       Elf32_Half      e_type;             ; 0x10h
+;       Elf32_Half      e_machine;          ; 0x12h
+;       Elf32_Word      e_version;          ; 0x14h
+;       Elf32_Addr      e_entry;            ; 0x18h
+;       Elf32_Off       e_phoff;            ; 0x1ch
+;       Elf32_Off       e_shoff;            ; 0x20h
+;       Elf32_Word      e_flags;            ; 0x24h
+;       Elf32_Half      e_ehsize;           ; 0x28h
+;       Elf32_Half      e_phentsize;        ; 0x2ah
+;       Elf32_Half      e_phnum;            ; 0x2ch
+;       Elf32_Half      e_shentsize;        ; 0x2eh
+;       Elf32_Half      e_shnum;            ; 0x30h
+;       Elf32_Half      shstrndx;           ; 0x32h
+; } Elf32_Ehdr;
+;
+; Section Header
+; typedef struct {
+;       Elf32_Word   sh_name;       ; 0x0
+;       Elf32_Word   sh_type;       ; 0x04h
+;       Elf32_Word   sh_flags;      ; 0x08h
+;       Elf32_Addr   sh_addr;       ; 0x0ch
+;       Elf32_Off    sh_offset;     ; 0x10h
+;       Elf32_Word   sh_size;       ; 0x14h
+;       Elf32_Word   sh_link;       ; 0x18h
+;       Elf32_Word   sh_info;       ; 0x1ch
+;       Elf32_Word   sh_addralign;  ; 0x20h
+;       Elf32_Word   sh_entsize;    ; 0x24h
+; } Elf32_Shdr;
+;
+; Program Header
+; typedef struct {
+;       Elf32_Word   p_type     ; 0x0
+;       Elf32_off    p_offset;  ; 0x04h
+;       Elf32_Addr   p_vaddr;   ; 0x08h
+;       Elf32_Addr   p_paddr;   ; 0x0ch
+;       Elf32_Word   p_filesz;  ; 0x10h
+;       Elf32_Word   p_memsz;   ; 0x14h
+;       Elf32_Word   p_flags;   ; 0x18h
+;       Elf32_Word   p_align;   ; 0x1ch
+; } Elf32_Phdr;
+
+
+InitKernel:
+    xor esi, esi
+    mov cx, word[PhyKernelBase + 2ch] ; pElfHdr->e_phnum
+    movzx ecx, cx
+    mov esi, [PhyKernelBase + 1ch] ; PElfHdr->e_phoff
+    add esi, PhyKernelBase
+.move_secton:
+    mov eax, [esi + 0]
+    cmp eax, 0
+    jz .no_action
+    push dword [esi + 10h]
+    mov eax, [esi + 04h]
+    add eax, PhyKernelBase
+    push eax
+    push dword [esi + 08h]
+    call MemCpy
+    add esp, 12
+.no_action:
+    add esi, 20h
+    dec ecx
+    jnz .move_secton
+    
+    ret
+    
+[section .gdt]
+GDT_NULL:       Descriptor 0, 0, 0
+GDT_FLAT_CODE:  Descriptor 0, 0ffffh, DA_P | DA_G_4K | DA_CR | DA_32
+GDT_FLAT_DATA:  Descriptor 0, 0ffffh, DA_P | DA_G_4K | DA_DW | DA_32
+GDT_VIDEO:      Descriptor 0b8000h, 0ffffh, DA_P | DA_DW | DA_DPL3
+
+SelectorFlatCode    equ GDT_FLAT_CODE - $$
+SelectorFlatData    equ GDT_FLAT_DATA - $$
+SelectorVideo       equ GDT_VIDEO - $$
+
+GdtLen equ $ - $$
+GdtPtr:
+    dw GdtLen - 1
+    dd PhyLoaderBase + $$
+    
+[section .data]
+align 32
+LABEL_DATA:
+; offset in real mode
+_szMemChkTitle db "BaseAddrL BaseAddrH LengthLow LengthHigh   Type", 0ah, 0
+_szRAMSize db "RAM size:", 0
+_szReturn db 0ah, 0
+
+_dwMCRNumber dd 0
+_dwDispPos dd (80 * 6 + 0) * 2
+_dwMemSize dd 0
+_ARDStruct:
+	_dwBaseAddrLow  dd 0
+	_dwBaseAddrHigh dd 0
+	_dwLengthLow    dd 0
+	_dwLengthHigh   dd 0
+	_dwType         dd 0
+	
+_MemChkBuf times 256 db 0
+
+; offset in protected mode
+szMemChkTitle   equ PhyLoaderBase + _szMemChkTitle
+szRAMSize       equ PhyLoaderBase + _szRAMSize
+szReturn        equ PhyLoaderBase + _szReturn
+
+dwMCRNumber     equ PhyLoaderBase + _dwMCRNumber
+dwDispPos       equ PhyLoaderBase + _dwDispPos
+dwMemSize       equ PhyLoaderBase + _dwMemSize
+ARDStruct       equ PhyLoaderBase + _ARDStruct
+	dwBaseAddrLow   equ PhyLoaderBase + _dwBaseAddrLow
+	dwBaseAddrHigh  equ PhyLoaderBase + _dwBaseAddrHigh
+	dwLengthLow     equ PhyLoaderBase + _dwLengthLow
+	dwLengthHigh    equ PhyLoaderBase + _dwLengthHigh
+	dwType          equ PhyLoaderBase + _dwType
+	
+MemChkBuf           equ PhyLoaderBase + _MemChkBuf
+
+StatckSpace times 1024 db 0
+TopOfStack  equ PhyLoaderBase + $
