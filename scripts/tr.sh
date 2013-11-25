@@ -13,7 +13,7 @@ function list_directory()
 			cd ..
 		else
 #			echo $file is file.
-			if file $file | grep -q "ASCII"
+			if file $file | grep -q "text"
 			then
 #				echo "d2u $file"
 				d2u $file
